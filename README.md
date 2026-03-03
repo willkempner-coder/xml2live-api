@@ -26,6 +26,19 @@ window.XML2LIVE_API_URL = "https://YOUR-VERCEL-URL.vercel.app/api/xml2live";
 
 7. Push the website repo.
 
+## Recommended Vercel env vars
+
+- `XML2LIVE_ALLOWED_ORIGINS`
+  - Example: `https://wlkonverter.cc,https://www.wlkonverter.cc`
+- `XML2LIVE_API_TOKEN`
+  - Optional shared token expected in the `X-XML2LIVE-Token` request header.
+
+If `XML2LIVE_API_TOKEN` is set in the API deployment, set the same value in:
+
+```js
+window.XML2LIVE_API_TOKEN = "YOUR_SHARED_TOKEN";
+```
+
 ## Notes
 
 - This backend does not consolidate media.

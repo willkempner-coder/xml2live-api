@@ -40,6 +40,8 @@ class Clip:
     fade_out_seconds: float
     crossfade_in: bool
     volume_keyframes: List[AutomationPoint]
+    playback_speed: float
+    reverse: bool
 
 
 @dataclass
@@ -194,6 +196,47 @@ def extract_gain_data(node: ET.Element, clip_in_frames: Optional[int] = None, fp
     return default_value, keyframes
 
 
+def extract_time_remap(node: ET.Element) -> tuple[float, bool]:
+    speed = 1.0
+    reverse = False
+    for effect in node.findall("./filter/effect"):
+        effect_name = " ".join(
+            filter(
+                None,
+                [
+                    effect.findtext("name"),
+                    effect.findtext("effectid"),
+                ],
+            )
+        ).lower()
+        if "timeremap" not in effect_name and "time remap" not in effect_name:
+            continue
+
+        variable_speed = False
+        explicit_speed: Optional[float] = None
+        for parameter in effect.findall("parameter"):
+            parameter_id = (parameter.findtext("parameterid") or parameter.findtext("name") or "").strip().lower()
+            value_text = parameter.findtext("value")
+            if parameter_id == "variablespeed":
+                variable_speed = parse_bool_text(value_text, default=False)
+            elif parameter_id == "speed" and value_text is not None:
+                try:
+                    explicit_speed = abs(float(value_text)) / 100.0
+                except ValueError:
+                    pass
+            elif parameter_id == "reverse":
+                reverse = parse_bool_text(value_text, default=False)
+
+        # Start with the explicit speed percentage when Premiere provides one.
+        # Variable-speed clips need a richer mapping than Ableton's simple
+        # constant warp markers, so leave them at normal speed for now.
+        if not variable_speed and explicit_speed and explicit_speed > 0:
+            speed = explicit_speed
+        break
+
+    return speed, reverse
+
+
 def parse_markers(sequence: ET.Element, fps: float) -> List[Marker]:
     markers: List[Marker] = []
     for marker_elem in sequence.findall("marker"):
@@ -322,6 +365,13 @@ def clip_from_xml(
     ticks_per_second = 254_016_000_000
     in_seconds = int(ppro_ticks_in) / ticks_per_second if ppro_ticks_in else in_frames / fps
     out_seconds = int(ppro_ticks_out) / ticks_per_second if ppro_ticks_out else out_frames / fps
+    playback_speed, reverse = extract_time_remap(clip_elem)
+
+    timeline_duration_seconds = max(0.0, (end_frames - start_frames) / fps) if fps > 0 else 0.0
+    source_duration_seconds = max(0.0, out_seconds - in_seconds)
+    inferred_speed = source_duration_seconds / timeline_duration_seconds if timeline_duration_seconds > 0 else 1.0
+    if inferred_speed > 0 and abs(inferred_speed - 1.0) > 0.001:
+        playback_speed = inferred_speed
 
     _, volume_keyframes = extract_gain_data(clip_elem, clip_in_frames=in_frames, fps=fps)
     crossfade_in = False
@@ -368,6 +418,8 @@ def clip_from_xml(
         fade_out_seconds=0.0,
         crossfade_in=crossfade_in,
         volume_keyframes=volume_keyframes,
+        playback_speed=playback_speed,
+        reverse=reverse,
     )
 
 

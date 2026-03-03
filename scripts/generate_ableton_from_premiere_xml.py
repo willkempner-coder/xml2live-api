@@ -171,12 +171,16 @@ def prepare_track(track: ET.Element, track_index: int, clip_count: int) -> None:
     arranger_events.clear()
 
 
-def apply_track_mix_metadata(track: ET.Element, src_track: AudioTrack) -> None:
+def apply_track_enabled_state(track: ET.Element, src_track: AudioTrack) -> None:
     mixer = find_first(track, "Mixer")
     child_value(mixer, "On/Manual").set("Value", "true" if src_track.enabled else "false")
     child_value(mixer, "Speaker/Manual").set(
         "Value", "true" if src_track.enabled and not src_track.muted else "false"
     )
+
+
+def apply_track_volume_metadata(track: ET.Element, src_track: AudioTrack) -> None:
+    mixer = find_first(track, "Mixer")
     child_value(mixer, "Volume/Manual").set("Value", format_float(clamp_gain(src_track.volume_level)))
 
 
@@ -280,8 +284,11 @@ def set_file_ref_absolute_only(file_ref: ET.Element, absolute_path: Path, size: 
         live_pack_id.set("Value", "")
 
 
-def apply_clip_mix_metadata(clip_elem: ET.Element, clip: Clip, bpm: float) -> None:
+def apply_clip_enabled_state(clip_elem: ET.Element, clip: Clip) -> None:
     child_value(clip_elem, "Disabled").set("Value", "false" if clip.enabled else "true")
+
+
+def apply_clip_volume_and_fades(clip_elem: ET.Element, clip: Clip, bpm: float) -> None:
     clip_gain = 1.0 if clip.volume_keyframes else clip.volume_level
     child_value(clip_elem, "SampleVolume").set("Value", format_float(clamp_gain(clip_gain)))
 
@@ -373,7 +380,7 @@ def build_clip(
     counter: Dict[str, int],
     color: str,
     reference_original_media: bool,
-    import_mix_metadata: bool,
+    import_volume_and_fades: bool,
 ) -> ET.Element:
     clip_elem = copy.deepcopy(template_clip)
     retag_ids(clip_elem, counter)
@@ -387,8 +394,9 @@ def build_clip(
     child_value(clip_elem, "CurrentEnd").set("Value", format_float(end_beats))
     child_value(clip_elem, "Name").set("Value", clip.name)
     child_value_any(clip_elem, "Color", "ColorIndex").set("Value", color)
-    child_value(clip_elem, "Disabled").set("Value", "false")
-    child_value(clip_elem, "IsWarped").set("Value", "false")
+    apply_clip_enabled_state(clip_elem, clip)
+    is_time_remapped = not clip.reverse and abs(clip.playback_speed - 1.0) > 0.001
+    child_value(clip_elem, "IsWarped").set("Value", "true" if is_time_remapped else "false")
 
     loop = child_value(clip_elem, "Loop")
     # Ableton's crossfades behave closest to Premiere when the visible incoming
@@ -428,8 +436,14 @@ def build_clip(
         raise ValueError("Template clip is missing warp markers")
     markers[0].set("SecTime", format_float(clip.in_seconds))
     markers[0].set("BeatTime", "0")
-    markers[1].set("SecTime", format_float(clip.in_seconds + 0.015625))
-    markers[1].set("BeatTime", "0.03125")
+    if is_time_remapped and clip_len_beats > 0:
+        # Map the Premiere source span to the Premiere timeline span so
+        # sped-up/slowed-down clips keep the correct audible duration.
+        markers[1].set("SecTime", format_float(clip.out_seconds))
+        markers[1].set("BeatTime", format_float(clip_len_beats))
+    else:
+        markers[1].set("SecTime", format_float(clip.in_seconds + 0.015625))
+        markers[1].set("BeatTime", "0.03125")
     for extra in markers[2:]:
         warp_markers.remove(extra)
 
@@ -437,8 +451,8 @@ def build_clip(
     for extra in list(time_sigs)[1:]:
         time_sigs.remove(extra)
 
-    if import_mix_metadata:
-        apply_clip_mix_metadata(clip_elem, clip, bpm)
+    if import_volume_and_fades:
+        apply_clip_volume_and_fades(clip_elem, clip, bpm)
 
     return clip_elem
 
@@ -529,6 +543,8 @@ def build_reference_track(reference_media_path: str, duration_seconds: float) ->
         fade_out_seconds=0.0,
         crossfade_in=False,
         volume_keyframes=[],
+        playback_speed=1.0,
+        reverse=False,
     )
     return AudioTrack(
         index=0,
@@ -559,7 +575,8 @@ def generate_set(
     output_project: Path,
     bpm: float,
     reference_original_media: bool = False,
-    import_mix_metadata: bool = False,
+    import_markers: bool = False,
+    import_volume_and_fades: bool = False,
     project_name: Optional[str] = None,
     reference_media_path: Optional[str] = None,
     reference_media_duration_seconds: Optional[float] = None,
@@ -571,7 +588,7 @@ def generate_set(
 
     update_transport(root)
     update_master_tempo(root, bpm)
-    if import_mix_metadata:
+    if import_markers:
         write_locators(root, timeline.markers, bpm)
 
     tracks_elem = child_value(root, "LiveSet/Tracks")
@@ -611,11 +628,10 @@ def generate_set(
         track_elem = copy.deepcopy(track_template)
         retag_ids(track_elem, id_counter)
         prepare_track(track_elem, track_index, src_track.clip_count)
-        if import_mix_metadata:
-            apply_track_mix_metadata(track_elem, src_track)
+        apply_track_enabled_state(track_elem, src_track)
+        if import_volume_and_fades:
+            apply_track_volume_metadata(track_elem, src_track)
             write_track_volume_automation(track_elem, src_track, bpm)
-        elif src_track.muted:
-            apply_track_mix_metadata(track_elem, src_track)
 
         color = child_value_any(track_elem, "Color", "ColorIndex").attrib["Value"]
         events = child_value(child_value(find_first(find_first(track_elem, "MainSequencer"), "ArrangerAutomation"), "Events"), ".")
@@ -645,7 +661,7 @@ def generate_set(
                 counter=id_counter,
                 color=color,
                 reference_original_media=reference_original_media,
-                import_mix_metadata=import_mix_metadata,
+                import_volume_and_fades=import_volume_and_fades,
             )
             events.append(new_clip)
 
@@ -697,9 +713,14 @@ def main() -> None:
         help="Leave the Ableton set pointing at the original source paths instead of copying media into the project",
     )
     parser.add_argument(
-        "--import-mix-metadata",
+        "--import-markers",
         action="store_true",
-        help="Import Premiere markers, mute states, fades, and clip/track gain when available",
+        help="Import sequence markers when available",
+    )
+    parser.add_argument(
+        "--import-volume-and-fades",
+        action="store_true",
+        help="Import track and clip volume, volume automation, fades, and crossfades when available",
     )
     parser.add_argument(
         "--project-name",
@@ -736,7 +757,8 @@ def main() -> None:
         output_project=args.output_project,
         bpm=args.bpm,
         reference_original_media=args.reference_original_media,
-        import_mix_metadata=args.import_mix_metadata,
+        import_markers=args.import_markers,
+        import_volume_and_fades=args.import_volume_and_fades,
         project_name=args.project_name,
         reference_media_path=args.reference_media_path,
         reference_media_duration_seconds=args.reference_media_duration_seconds,
