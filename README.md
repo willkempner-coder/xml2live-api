@@ -4,7 +4,7 @@ This repo is the minimal backend for the `willkempner.com/xml2live` page.
 
 ## Files
 
-- `api/xml2live.py` - Vercel serverless endpoint
+- `api/xml2live.py` - Vercel  serverless endpoint
 - `scripts/` - converter logic copied from the desktop app
 - `Template/` - Ableton 11 and Ableton 9 templates
 - `requirements.txt` - Python dependency list
