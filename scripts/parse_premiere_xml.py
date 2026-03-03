@@ -536,6 +536,8 @@ def dedupe_tracks(audio_tracks: List[AudioTrack]) -> List[AudioTrack]:
                 clip.end_frames,
                 round(clip.in_seconds, 6),
                 round(clip.out_seconds, 6),
+                round(clip.playback_speed, 6),
+                clip.reverse,
             )
             for clip in track.clips
         )

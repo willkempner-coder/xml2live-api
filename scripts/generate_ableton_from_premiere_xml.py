@@ -52,6 +52,15 @@ def clamp_gain(value: float) -> float:
     return max(0.0003162277571, min(1.99526238, value))
 
 
+def semitones_from_speed(playback_speed: float) -> tuple[int, float]:
+    if playback_speed <= 0:
+        return 0, 0.0
+    total_semitones = 12.0 * math.log2(playback_speed)
+    coarse = int(round(total_semitones))
+    fine = (total_semitones - coarse) * 100.0
+    return coarse, fine
+
+
 def file_crc32(path: Path) -> int:
     crc = 0
     with path.open("rb") as handle:
@@ -395,8 +404,11 @@ def build_clip(
     child_value(clip_elem, "Name").set("Value", clip.name)
     child_value_any(clip_elem, "Color", "ColorIndex").set("Value", color)
     apply_clip_enabled_state(clip_elem, clip)
-    is_time_remapped = not clip.reverse and abs(clip.playback_speed - 1.0) > 0.001
-    child_value(clip_elem, "IsWarped").set("Value", "true" if is_time_remapped else "false")
+    child_value(clip_elem, "IsWarped").set("Value", "false")
+
+    coarse_pitch, fine_pitch = semitones_from_speed(clip.playback_speed)
+    child_value(clip_elem, "PitchCoarse").set("Value", str(coarse_pitch))
+    child_value(clip_elem, "PitchFine").set("Value", format_float(fine_pitch))
 
     loop = child_value(clip_elem, "Loop")
     # Ableton's crossfades behave closest to Premiere when the visible incoming
@@ -436,14 +448,8 @@ def build_clip(
         raise ValueError("Template clip is missing warp markers")
     markers[0].set("SecTime", format_float(clip.in_seconds))
     markers[0].set("BeatTime", "0")
-    if is_time_remapped and clip_len_beats > 0:
-        # Map the Premiere source span to the Premiere timeline span so
-        # sped-up/slowed-down clips keep the correct audible duration.
-        markers[1].set("SecTime", format_float(clip.out_seconds))
-        markers[1].set("BeatTime", format_float(clip_len_beats))
-    else:
-        markers[1].set("SecTime", format_float(clip.in_seconds + 0.015625))
-        markers[1].set("BeatTime", "0.03125")
+    markers[1].set("SecTime", format_float(clip.in_seconds + 0.015625))
+    markers[1].set("BeatTime", "0.03125")
     for extra in markers[2:]:
         warp_markers.remove(extra)
 
